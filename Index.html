@@ -1,0 +1,1574 @@
+<!DOCTYPE html>
+<html>
+<head>
+ // Configuration constants
+const SWAP_CONFIG = {
+    // Network
+    CHAIN_ID: 9745,
+    RPC_URL: 'https://rpc.plasma.to',
+    EXPLORER_URL: 'https://plasmascan.to/',
+
+    // Contract Addresses
+    COZY_TOKEN: '0x06e2ef46662834f4e42dbf9ff9222b077c57df5c',
+    ROUTER: '0x89E695B38610e78a77Fb310458Dfd855505AD239',
+    WXPL: '0x6100E367285b01F48D07953803A2d8dCA5D19873',
+
+    // Swap Settings
+    DEFAULT_SLIPPAGE: 1.0, // 1%
+    MAX_SLIPPAGE: 50,
+    MIN_SLIPPAGE: 0.1,
+    DEADLINE_MINUTES: 20,
+    
+    // UI Settings
+    REFRESH_INTERVAL: 10000, // 10 seconds
+    GAS_LIMIT_BUFFER: 1.2, // 20% buffer
+};
+
+// Router ABI (Hanya fungsi yang diperlukan untuk swap)
+const ROUTER_ABI = [
+    "function getAmountsOut(uint amountIn, address[] memory path) view returns (uint[] memory amounts)",
+    "function getAmountsIn(uint amountOut, address[] memory path) view returns (uint[] memory amounts)",
+    "function swapExactETHForTokens(uint amountOutMin, address[] path, address to, uint deadline) payable returns (uint[] amounts)",
+    "function swapExactTokensForETH(uint amountIn, uint amountOutMin, address[] path, address to, uint deadline) returns (uint[] amounts)",
+    "function swapExactTokensForTokens(uint amountIn, uint amountOutMin, address[] path, address to, uint deadline) returns (uint[] amounts)",
+    "function swapExactETHForTokensSupportingFeeOnTransferTokens(uint amountOutMin, address[] path, address to, uint deadline) payable",
+    "function swapExactTokensForETHSupportingFeeOnTransferTokens(uint amountIn, uint amountOutMin, address[] path, address to, uint deadline)",
+    "function swapExactTokensForTokensSupportingFeeOnTransferTokens(uint amountIn, uint amountOutMin, address[] path, address to, uint deadline)",
+    "function WETH() view returns (address)"
+];
+
+// ERC20 ABI
+const ERC20_ABI = [
+    "function balanceOf(address) view returns (uint256)",
+    "function allowance(address, address) view returns (uint256)",
+    "function approve(address, uint256) returns (bool)",
+    "function decimals() view returns (uint8)",
+    "function symbol() view returns (string)",
+    "function name() view returns (string)"
+]; 
+
+
+  // Token management system
+class TokenManager {
+    constructor() {
+        this.tokens = this.loadTokens();
+        this.tokenContracts = new Map();
+    }
+
+    // Default tokens
+    getDefaultTokens() {
+        return [
+            {
+                address: "0x0000000000000000000000000000000000000000",
+                symbol: "XPL",
+                name: "Plasma Native Token",
+                decimals: 18,
+                icon: "https://cryptologos.cc/logos/ethereum-eth-logo.png",
+                isNative: true
+            },
+            {
+                address: SWAP_CONFIG.COZY_TOKEN,
+                symbol: "COZY",
+                name: "Cozy Token",
+                decimals: 18,
+                icon: "https://photos.pinksale.finance/file/pinksale-logo-upload/1759992605150-e3175ba3ea1d9672e44128a60a685807.JPG",
+                isNative: false
+            },
+            {
+                address: SWAP_CONFIG.WXPL,
+                symbol: "WXPL",
+                name: "Wrapped XPL",
+                decimals: 18,
+                icon: "https://cryptologos.cc/logos/ethereum-eth-logo.png",
+                isNative: false
+            }
+        ];
+    }
+
+    // Load tokens from localStorage
+    loadTokens() {
+        const defaultTokens = this.getDefaultTokens();
+        const customTokens = JSON.parse(localStorage.getItem('cozySwapCustomTokens') || '[]');
+        return [...defaultTokens, ...customTokens];
+    }
+
+    // Save custom tokens
+    saveCustomTokens() {
+        const customTokens = this.tokens.filter(token => 
+            !this.getDefaultTokens().some(t => t.address === token.address)
+        );
+        localStorage.setItem('cozySwapCustomTokens', JSON.stringify(customTokens));
+    }
+
+    // Add custom token
+    async addCustomToken(address, symbol, decimals, name = symbol) {
+        // Validate token
+        try {
+            const tokenContract = new ethers.Contract(address, ERC20_ABI, provider);
+            const [actualSymbol, actualDecimals] = await Promise.all([
+                tokenContract.symbol(),
+                tokenContract.decimals()
+            ]);
+
+            // Use actual values from contract
+            const token = {
+                address: address,
+                symbol: actualSymbol,
+                name: name || actualSymbol,
+                decimals: actualDecimals,
+                icon: "https://cryptologos.cc/logos/ethereum-eth-logo.png",
+                isNative: false
+            };
+
+            // Check if already exists
+            if (this.tokens.some(t => t.address.toLowerCase() === address.toLowerCase())) {
+                throw new Error('Token already exists');
+            }
+
+            this.tokens.push(token);
+            this.saveCustomTokens();
+            return token;
+        } catch (error) {
+            throw new Error('Invalid token address');
+        }
+    }
+
+    // Get token by symbol
+    getTokenBySymbol(symbol) {
+        return this.tokens.find(token => token.symbol === symbol);
+    }
+
+    // Get token by address
+    getTokenByAddress(address) {
+        return this.tokens.find(token => 
+            token.address.toLowerCase() === address.toLowerCase()
+        );
+    }
+
+    // Get token contract
+    getTokenContract(address, signer = null) {
+        const key = address.toLowerCase();
+        if (!this.tokenContracts.has(key)) {
+            const contract = new ethers.Contract(
+                address, 
+                ERC20_ABI, 
+                signer || provider
+            );
+            this.tokenContracts.set(key, contract);
+        }
+        return this.tokenContracts.get(key);
+    }
+
+    // Get token balance
+    async getBalance(tokenAddress, userAddress) {
+        try {
+            if (tokenAddress === "0x0000000000000000000000000000000000000000") {
+                // Native token balance
+                return await provider.getBalance(userAddress);
+            } else {
+                // ERC20 token balance
+                const tokenContract = this.getTokenContract(tokenAddress);
+                return await tokenContract.balanceOf(userAddress);
+            }
+        } catch (error) {
+            console.error(`Error getting balance for ${tokenAddress}:`, error);
+            return ethers.BigNumber.from(0);
+        }
+    }
+
+    // Check token allowance
+    async getAllowance(tokenAddress, owner, spender) {
+        if (tokenAddress === "0x0000000000000000000000000000000000000000") {
+            return ethers.constants.MaxUint256; // Native token doesn't need allowance
+        }
+        
+        const tokenContract = this.getTokenContract(tokenAddress);
+        return await tokenContract.allowance(owner, spender);
+    }
+
+    // Approve token
+    async approveToken(tokenAddress, spender, amount, signer) {
+        const tokenContract = this.getTokenContract(tokenAddress, signer);
+        const tx = await tokenContract.approve(spender, amount);
+        return await tx.wait();
+    }
+}
+
+
+  // Wallet management system
+class WalletManager {
+    constructor() {
+        this.provider = null;
+        this.signer = null;
+        this.userAddress = null;
+        this.routerContract = null;
+        this.isConnected = false;
+    }
+
+    // Initialize wallet
+    async initialize() {
+        if (typeof window.ethereum === 'undefined') {
+            throw new Error('MetaMask not installed');
+        }
+
+        this.provider = new ethers.providers.Web3Provider(window.ethereum);
+        await this.checkNetwork();
+        
+        // Initialize router contract
+        this.routerContract = new ethers.Contract(
+            SWAP_CONFIG.ROUTER, 
+            ROUTER_ABI, 
+            this.provider
+        );
+
+        // Check if already connected
+        const accounts = await this.provider.listAccounts();
+        if (accounts.length > 0) {
+            await this.handleWalletConnected(accounts[0]);
+        }
+
+        // Setup event listeners
+        this.setupEventListeners();
+    }
+
+    // Connect wallet
+    async connect() {
+        try {
+            await this.provider.send("eth_requestAccounts", []);
+            const accounts = await this.provider.listAccounts();
+            
+            if (accounts.length > 0) {
+                await this.handleWalletConnected(accounts[0]);
+                return true;
+            }
+            return false;
+        } catch (error) {
+            console.error('Error connecting wallet:', error);
+            throw error;
+        }
+    }
+
+    // Handle wallet connected
+    async handleWalletConnected(address) {
+        this.userAddress = address;
+        this.signer = this.provider.getSigner();
+        this.isConnected = true;
+        
+        // Update contracts with signer
+        this.routerContract = this.routerContract.connect(this.signer);
+        
+        // Emit event
+        this.emitWalletChanged();
+    }
+
+    // Check and switch network
+    async checkNetwork() {
+        const network = await this.provider.getNetwork();
+        
+        if (network.chainId !== SWAP_CONFIG.CHAIN_ID) {
+            try {
+                await window.ethereum.request({
+                    method: 'wallet_switchEthereumChain',
+                    params: [{ chainId: `0x${SWAP_CONFIG.CHAIN_ID.toString(16)}` }],
+                });
+            } catch (switchError) {
+                if (switchError.code === 4902) {
+                    await window.ethereum.request({
+                        method: 'wallet_addEthereumChain',
+                        params: [
+                            {
+                                chainId: `0x${SWAP_CONFIG.CHAIN_ID.toString(16)}`,
+                                chainName: 'Plasma Chain',
+                                rpcUrls: [SWAP_CONFIG.RPC_URL],
+                                nativeCurrency: {
+                                    name: 'XPL',
+                                    symbol: 'XPL',
+                                    decimals: 18
+                                },
+                                blockExplorerUrls: [SWAP_CONFIG.EXPLORER_URL]
+                            }
+                        ]
+                    });
+                } else {
+                    throw switchError;
+                }
+            }
+        }
+    }
+
+    // Setup event listeners
+    setupEventListeners() {
+        if (window.ethereum) {
+            window.ethereum.on('accountsChanged', (accounts) => {
+                if (accounts.length === 0) {
+                    this.handleWalletDisconnected();
+                } else {
+                    this.handleWalletConnected(accounts[0]);
+                }
+            });
+
+            window.ethereum.on('chainChanged', (chainId) => {
+                window.location.reload();
+            });
+        }
+    }
+
+    // Handle wallet disconnected
+    handleWalletDisconnected() {
+        this.userAddress = null;
+        this.signer = null;
+        this.isConnected = false;
+        this.emitWalletChanged();
+    }
+
+    // Emit wallet changed event
+    emitWalletChanged() {
+        const event = new CustomEvent('walletChanged', {
+            detail: {
+                address: this.userAddress,
+                isConnected: this.isConnected
+            }
+        });
+        window.dispatchEvent(event);
+    }
+
+    // Get transaction receipt
+    async getTransactionReceipt(txHash) {
+        return await this.provider.getTransactionReceipt(txHash);
+    }
+
+    // Get gas price
+    async getGasPrice() {
+        return await this.provider.getGasPrice();
+    }
+
+    // Estimate gas
+    async estimateGas(transaction) {
+        return await this.provider.estimateGas(transaction);
+    }
+}
+
+  // Utility functions
+class SwapUtils {
+    // Format number with decimals
+    static formatNumber(number, decimals = 4) {
+        if (!number || isNaN(number)) return '0';
+        return parseFloat(number).toFixed(decimals);
+    }
+
+    // Format balance from BigNumber
+    static formatBalance(balance, decimals = 18) {
+        if (!balance) return '0';
+        return parseFloat(ethers.utils.formatUnits(balance, decimals)).toFixed(6);
+    }
+
+    // Parse amount to BigNumber
+    static parseAmount(amount, decimals = 18) {
+        if (!amount || isNaN(amount)) return ethers.BigNumber.from(0);
+        return ethers.utils.parseUnits(amount.toString(), decimals);
+    }
+
+    // Calculate minimum output with slippage
+    static calculateMinAmount(amount, slippage) {
+        if (!amount || isNaN(amount)) return '0';
+        const minAmount = amount * (1 - slippage / 100);
+        return minAmount > 0 ? minAmount : 0;
+    }
+
+    // Calculate price impact
+    static calculatePriceImpact(inputAmount, outputAmount, reserves) {
+        if (!inputAmount || !outputAmount || !reserves) return 0;
+        
+        const expectedOutput = (inputAmount * reserves.to) / reserves.from;
+        const impact = ((expectedOutput - outputAmount) / expectedOutput) * 100;
+        return impact > 0 ? impact : 0;
+    }
+
+    // Get price impact color
+    static getPriceImpactColor(impact) {
+        if (impact < 1) return 'var(--success)';
+        if (impact < 3) return 'var(--warning)';
+        return 'var(--error)';
+    }
+
+    // Calculate deadline timestamp
+    static getDeadline() {
+        return Math.floor(Date.now() / 1000) + (SWAP_CONFIG.DEADLINE_MINUTES * 60);
+    }
+
+    // Debounce function
+    static debounce(func, wait) {
+        let timeout;
+        return function executedFunction(...args) {
+            const later = () => {
+                clearTimeout(timeout);
+                func(...args);
+            };
+            clearTimeout(timeout);
+            timeout = setTimeout(later, wait);
+        };
+    }
+
+    // Copy to clipboard
+    static copyToClipboard(text) {
+        navigator.clipboard.writeText(text).then(() => {
+            console.log('Copied to clipboard');
+        });
+    }
+
+    // Shorten address
+    static shortenAddress(address, chars = 4) {
+        if (!address) return '';
+        return `${address.substring(0, chars + 2)}...${address.substring(42 - chars)}`;
+    }
+
+    // Validate amount
+    static validateAmount(amount, balance = null) {
+        if (!amount || isNaN(amount) || parseFloat(amount) <= 0) {
+            return { isValid: false, error: 'Enter a valid amount' };
+        }
+
+        if (balance !== null && parseFloat(amount) > parseFloat(balance)) {
+            return { isValid: false, error: 'Insufficient balance' };
+        }
+
+        return { isValid: true, error: null };
+    }
+
+    // Format percentage
+    static formatPercentage(value) {
+        return `${value}%`;
+    }
+
+    // Generate explorer URL
+    static getExplorerUrl(txHash) {
+        return `${SWAP_CONFIG.EXPLORER_URL}tx/${txHash}`;
+    }
+}
+
+
+ // Main swap functionality
+class SwapEngine {
+    constructor(walletManager, tokenManager) {
+        this.wallet = walletManager;
+        this.tokens = tokenManager;
+        this.state = {
+            fromToken: null,
+            toToken: null,
+            fromAmount: '',
+            toAmount: '',
+            slippage: SWAP_CONFIG.DEFAULT_SLIPPAGE,
+            isSwapping: false,
+            quote: null,
+            balances: {},
+            allowances: {}
+        };
+
+        this.init();
+    }
+
+    async init() {
+        // Set default tokens
+        this.state.fromToken = this.tokens.getTokenBySymbol('XPL');
+        this.state.toToken = this.tokens.getTokenBySymbol('COZY');
+        
+        // Load balances if wallet connected
+        if (this.wallet.isConnected) {
+            await this.updateBalances();
+        }
+
+        // Listen for wallet changes
+        window.addEventListener('walletChanged', (event) => {
+            if (event.detail.isConnected) {
+                this.updateBalances();
+            } else {
+                this.resetBalances();
+            }
+        });
+    }
+
+    // Set from token
+    setFromToken(token) {
+        this.state.fromToken = token;
+        this.state.fromAmount = '';
+        this.state.toAmount = '';
+        this.state.quote = null;
+        this.updateBalances();
+        this.emitStateChange();
+    }
+
+    // Set to token
+    setToToken(token) {
+        this.state.toToken = token;
+        this.state.toAmount = '';
+        this.state.quote = null;
+        this.updateBalances();
+        this.emitStateChange();
+    }
+
+    // Set from amount and calculate quote
+    async setFromAmount(amount) {
+        this.state.fromAmount = amount;
+        
+        if (!amount || parseFloat(amount) <= 0) {
+            this.state.toAmount = '';
+            this.state.quote = null;
+            this.emitStateChange();
+            return;
+        }
+
+        await this.calculateQuote();
+    }
+
+    // Set to amount and calculate reverse quote
+    async setToAmount(amount) {
+        this.state.toAmount = amount;
+        
+        if (!amount || parseFloat(amount) <= 0) {
+            this.state.fromAmount = '';
+            this.state.quote = null;
+            this.emitStateChange();
+            return;
+        }
+
+        await this.calculateReverseQuote();
+    }
+
+    // Switch tokens
+    switchTokens() {
+        const temp = this.state.fromToken;
+        this.state.fromToken = this.state.toToken;
+        this.state.toToken = temp;
+        
+        // Switch amounts if they exist
+        if (this.state.fromAmount && this.state.toAmount) {
+            const tempAmount = this.state.fromAmount;
+            this.state.fromAmount = this.state.toAmount;
+            this.state.toAmount = tempAmount;
+        } else {
+            this.state.fromAmount = '';
+            this.state.toAmount = '';
+        }
+        
+        this.state.quote = null;
+        this.updateBalances();
+        this.emitStateChange();
+    }
+
+    // Set slippage
+    setSlippage(slippage) {
+        if (slippage >= SWAP_CONFIG.MIN_SLIPPAGE && slippage <= SWAP_CONFIG.MAX_SLIPPAGE) {
+            this.state.slippage = slippage;
+            if (this.state.fromAmount) {
+                this.calculateQuote();
+            }
+            this.emitStateChange();
+        }
+    }
+
+    // Calculate swap quote
+    async calculateQuote() {
+        try {
+            if (!this.state.fromToken || !this.state.toToken || !this.state.fromAmount) {
+                return;
+            }
+
+            const amountIn = SwapUtils.parseAmount(this.state.fromAmount, this.state.fromToken.decimals);
+            const path = await this.getSwapPath();
+
+            const amounts = await this.wallet.routerContract.getAmountsOut(amountIn, path);
+            const amountOut = ethers.utils.formatUnits(amounts[amounts.length - 1], this.state.toToken.decimals);
+
+            this.state.toAmount = amountOut;
+            this.state.quote = {
+                amountIn: this.state.fromAmount,
+                amountOut: amountOut,
+                minAmountOut: SwapUtils.calculateMinAmount(amountOut, this.state.slippage),
+                path: path,
+                priceImpact: 0 // Would need reserve data for accurate calculation
+            };
+
+            this.emitStateChange();
+        } catch (error) {
+            console.error('Error calculating quote:', error);
+            this.state.toAmount = '';
+            this.state.quote = null;
+            this.emitStateChange();
+        }
+    }
+
+    // Calculate reverse quote
+    async calculateReverseQuote() {
+        try {
+            if (!this.state.fromToken || !this.state.toToken || !this.state.toAmount) {
+                return;
+            }
+
+            const amountOut = SwapUtils.parseAmount(this.state.toAmount, this.state.toToken.decimals);
+            const path = await this.getSwapPath();
+
+            const amounts = await this.wallet.routerContract.getAmountsIn(amountOut, path);
+            const amountIn = ethers.utils.formatUnits(amounts[0], this.state.fromToken.decimals);
+
+            this.state.fromAmount = amountIn;
+            this.state.quote = {
+                amountIn: amountIn,
+                amountOut: this.state.toAmount,
+                minAmountOut: SwapUtils.calculateMinAmount(this.state.toAmount, this.state.slippage),
+                path: path,
+                priceImpact: 0
+            };
+
+            this.emitStateChange();
+        } catch (error) {
+            console.error('Error calculating reverse quote:', error);
+            this.state.fromAmount = '';
+            this.state.quote = null;
+            this.emitStateChange();
+        }
+    }
+
+    // Get swap path
+    async getSwapPath() {
+        const fromAddress = this.state.fromToken.isNative ? await this.wallet.routerContract.WETH() : this.state.fromToken.address;
+        const toAddress = this.state.toToken.isNative ? await this.wallet.routerContract.WETH() : this.state.toToken.address;
+        
+        return [fromAddress, toAddress];
+    }
+
+    // Execute swap
+    async executeSwap() {
+        if (!this.wallet.isConnected) {
+            throw new Error('Wallet not connected');
+        }
+
+        if (!this.state.quote) {
+            throw new Error('No quote available');
+        }
+
+        const validation = SwapUtils.validateAmount(
+            this.state.fromAmount, 
+            this.state.balances[this.state.fromToken.symbol]
+        );
+
+        if (!validation.isValid) {
+            throw new Error(validation.error);
+        }
+
+        this.state.isSwapping = true;
+        this.emitStateChange();
+
+        try {
+            const deadline = SwapUtils.getDeadline();
+            const minAmountOut = SwapUtils.parseAmount(this.state.quote.minAmountOut, this.state.toToken.decimals);
+            const path = this.state.quote.path;
+
+            let tx;
+
+            if (this.state.fromToken.isNative) {
+                // Swap native token for ERC20
+                const value = SwapUtils.parseAmount(this.state.fromAmount, this.state.fromToken.decimals);
+                tx = await this.wallet.routerContract.swapExactETHForTokens(
+                    minAmountOut,
+                    path,
+                    this.wallet.userAddress,
+                    deadline,
+                    { value: value }
+                );
+            } else if (this.state.toToken.isNative) {
+                // Swap ERC20 for native token
+                const amountIn = SwapUtils.parseAmount(this.state.fromAmount, this.state.fromToken.decimals);
+                
+                // Check and approve allowance
+                await this.checkAndApproveAllowance(amountIn);
+                
+                tx = await this.wallet.routerContract.swapExactTokensForETH(
+                    amountIn,
+                    minAmountOut,
+                    path,
+                    this.wallet.userAddress,
+                    deadline
+                );
+            } else {
+                // Swap ERC20 for ERC20
+                const amountIn = SwapUtils.parseAmount(this.state.fromAmount, this.state.fromToken.decimals);
+                
+                // Check and approve allowance
+                await this.checkAndApproveAllowance(amountIn);
+                
+                tx = await this.wallet.routerContract.swapExactTokensForTokens(
+                    amountIn,
+                    minAmountOut,
+                    path,
+                    this.wallet.userAddress,
+                    deadline
+                );
+            }
+
+            // Wait for transaction confirmation
+            const receipt = await tx.wait();
+            
+            // Reset amounts after successful swap
+            this.state.fromAmount = '';
+            this.state.toAmount = '';
+            this.state.quote = null;
+            
+            // Update balances
+            await this.updateBalances();
+            
+            return receipt;
+        } catch (error) {
+            console.error('Error executing swap:', error);
+            throw error;
+        } finally {
+            this.state.isSwapping = false;
+            this.emitStateChange();
+        }
+    }
+
+    // Check and approve token allowance
+    async checkAndApproveAllowance(amount) {
+        if (this.state.fromToken.isNative) return;
+
+        const currentAllowance = await this.tokens.getAllowance(
+            this.state.fromToken.address,
+            this.wallet.userAddress,
+            SWAP_CONFIG.ROUTER
+        );
+
+        if (currentAllowance.lt(amount)) {
+            await this.tokens.approveToken(
+                this.state.fromToken.address,
+                SWAP_CONFIG.ROUTER,
+                amount,
+                this.wallet.signer
+            );
+        }
+    }
+
+    // Update balances
+    async updateBalances() {
+        if (!this.wallet.isConnected) return;
+
+        try {
+            const balancePromises = this.tokens.tokens.map(async (token) => {
+                const balance = await this.tokens.getBalance(token.address, this.wallet.userAddress);
+                return { symbol: token.symbol, balance: SwapUtils.formatBalance(balance, token.decimals) };
+            });
+
+            const balances = await Promise.all(balancePromises);
+            
+            balances.forEach(({ symbol, balance }) => {
+                this.state.balances[symbol] = balance;
+            });
+
+            this.emitStateChange();
+        } catch (error) {
+            console.error('Error updating balances:', error);
+        }
+    }
+
+    // Reset balances
+    resetBalances() {
+        this.state.balances = {};
+        this.emitStateChange();
+    }
+
+    // Get swap validation
+    getSwapValidation() {
+        if (!this.wallet.isConnected) {
+            return { isValid: false, error: 'Connect wallet' };
+        }
+
+        if (!this.state.fromAmount || parseFloat(this.state.fromAmount) <= 0) {
+            return { isValid: false, error: 'Enter amount' };
+        }
+
+        if (!this.state.quote) {
+            return { isValid: false, error: 'Calculating quote...' };
+        }
+
+        const fromBalance = this.state.balances[this.state.fromToken.symbol];
+        if (parseFloat(this.state.fromAmount) > parseFloat(fromBalance || 0)) {
+            return { isValid: false, error: 'Insufficient balance' };
+        }
+
+        return { isValid: true, error: null };
+    }
+
+    // Emit state change event
+    emitStateChange() {
+        const event = new CustomEvent('swapStateChanged', {
+            detail: { ...this.state }
+        });
+        window.dispatchEvent(event);
+    }
+
+    // Get current state
+    getState() {
+        return { ...this.state };
+    }
+}
+
+
+/* Swap Specific Styles */
+.swap-container {
+    max-width: 480px;
+    margin: 0 auto;
+    padding: 20px;
+}
+
+.swap-card {
+    background: var(--card-bg);
+    border-radius: 20px;
+    padding: 20px;
+    border: 1px solid var(--border);
+    margin-bottom: 20px;
+}
+
+.swap-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+}
+
+.swap-title {
+    font-size: 18px;
+    font-weight: 600;
+}
+
+.token-input {
+    background: var(--secondary);
+    border-radius: 16px;
+    padding: 16px;
+    margin-bottom: 10px;
+    border: 1px solid transparent;
+    transition: border 0.2s;
+}
+
+.token-input:focus-within {
+    border-color: var(--primary);
+}
+
+.token-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+}
+
+.token-label {
+    font-size: 14px;
+    color: var(--text-secondary);
+}
+
+.balance {
+    font-size: 14px;
+    color: var(--text-secondary);
+}
+
+.input-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.token-select {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--background);
+    padding: 8px 12px;
+    border-radius: 12px;
+    cursor: pointer;
+    font-weight: 600;
+    transition: background 0.2s;
+    border: none;
+    color: var(--text);
+}
+
+.token-select:hover {
+    background: #2a2a2a;
+}
+
+.token-icon {
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+}
+
+.token-amount {
+    background: none;
+    border: none;
+    color: var(--text);
+    font-size: 24px;
+    font-weight: 600;
+    width: 100%;
+    text-align: right;
+    outline: none;
+}
+
+.token-amount::placeholder {
+    color: var(--text-secondary);
+}
+
+.swap-arrow {
+    display: flex;
+    justify-content: center;
+    margin: 10px 0;
+}
+
+.swap-arrow-btn {
+    background: var(--secondary);
+    border: none;
+    border-radius: 12px;
+    width: 30px;
+    height: 30px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    color: var(--text);
+    transition: background 0.2s;
+}
+
+.swap-arrow-btn:hover {
+    background: var(--border);
+}
+
+.swap-info {
+    margin-top: 15px;
+    padding: 12px;
+    background: var(--secondary);
+    border-radius: 12px;
+    font-size: 14px;
+}
+
+.info-row {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 8px;
+}
+
+.info-label {
+    color: var(--text-secondary);
+}
+
+.info-value {
+    font-weight: 600;
+}
+
+.price-impact {
+    color: var(--success);
+}
+
+.price-impact.high {
+    color: var(--error);
+}
+
+.price-impact.medium {
+    color: var(--warning);
+}
+
+.swap-btn {
+    width: 100%;
+    background: var(--primary);
+    color: white;
+    border: none;
+    padding: 16px;
+    border-radius: 16px;
+    font-weight: 600;
+    font-size: 18px;
+    cursor: pointer;
+    transition: background 0.2s;
+    margin-top: 10px;
+}
+
+.swap-btn:hover:not(:disabled) {
+    background: var(--primary-dark);
+}
+
+.swap-btn:disabled {
+    background: var(--border);
+    color: var(--text-secondary);
+    cursor: not-allowed;
+}
+
+.swap-btn.loading {
+    background: var(--border);
+    color: var(--text-secondary);
+    cursor: wait;
+}
+
+/* Slippage Settings */
+.slippage-settings {
+    margin-top: 15px;
+    padding-top: 15px;
+    border-top: 1px solid var(--border);
+}
+
+.slippage-title {
+    font-size: 14px;
+    margin-bottom: 10px;
+    color: var(--text-secondary);
+}
+
+.slippage-options {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 10px;
+}
+
+.slippage-option {
+    flex: 1;
+    text-align: center;
+    padding: 8px;
+    background: var(--background);
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background 0.2s;
+    border: 1px solid transparent;
+}
+
+.slippage-option:hover {
+    background: #2a2a2a;
+}
+
+.slippage-option.active {
+    background: var(--primary);
+    border-color: var(--primary);
+}
+
+.slippage-input {
+    width: 100%;
+    background: var(--background);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px;
+    color: var(--text);
+    text-align: center;
+}
+
+.slippage-input:focus {
+    border-color: var(--primary);
+    outline: none;
+}
+
+/* Loading States */
+.loading-dots {
+    display: inline-block;
+    position: relative;
+    width: 80px;
+    height: 80px;
+}
+
+.loading-dots div {
+    position: absolute;
+    top: 33px;
+    width: 13px;
+    height: 13px;
+    border-radius: 50%;
+    background: var(--primary);
+    animation-timing-function: cubic-bezier(0, 1, 1, 0);
+}
+
+.loading-dots div:nth-child(1) {
+    left: 8px;
+    animation: loading-dots1 0.6s infinite;
+}
+
+.loading-dots div:nth-child(2) {
+    left: 8px;
+    animation: loading-dots2 0.6s infinite;
+}
+
+.loading-dots div:nth-child(3) {
+    left: 32px;
+    animation: loading-dots2 0.6s infinite;
+}
+
+.loading-dots div:nth-child(4) {
+    left: 56px;
+    animation: loading-dots3 0.6s infinite;
+}
+
+@keyframes loading-dots1 {
+    0% { transform: scale(0); }
+    100% { transform: scale(1); }
+}
+
+@keyframes loading-dots3 {
+    0% { transform: scale(1); }
+    100% { transform: scale(0); }
+}
+
+@keyframes loading-dots2 {
+    0% { transform: translate(0, 0); }
+    100% { transform: translate(24px, 0); }
+}
+
+/* Responsive Design */
+@media (max-width: 480px) {
+    .swap-container {
+        padding: 10px;
+    }
+    
+    .swap-card {
+        padding: 15px;
+    }
+    
+    .token-amount {
+        font-size: 20px;
+    }
+    
+    .slippage-options {
+        flex-direction: column;
+    }
+}
+
+/* Animation for swap */
+@keyframes swapSuccess {
+    0% { background-color: var(--primary); }
+    50% { background-color: var(--success); }
+    100% { background-color: var(--primary); }
+}
+
+.swap-success {
+    animation: swapSuccess 2s ease-in-out;
+}
+
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CozySwap - Swap</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/5.7.1/ethers.umd.min.js"></script>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="swap-container">
+        <!-- Header -->
+        <header class="swap-header">
+            <div class="logo">
+                <img src="https://photos.pinksale.finance/file/pinksale-logo-upload/1759992605150-e3175ba3ea1d9672e44128a60a685807.JPG" alt="CozySwap" class="logo-img">
+                <span class="logo-text">CozySwap</span>
+            </div>
+            <button class="wallet-btn" id="connectWallet">Connect Wallet</button>
+        </header>
+
+        <!-- Swap Card -->
+        <div class="swap-card">
+            <div class="swap-header">
+                <h2 class="swap-title">Swap</h2>
+                <button class="settings-btn" id="settingsBtn">⚙️</button>
+            </div>
+
+            <!-- From Token -->
+            <div class="token-input">
+                <div class="token-row">
+                    <span class="token-label">From</span>
+                    <span class="balance">Balance: <span id="fromBalance">0</span></span>
+                </div>
+                <div class="input-row">
+                    <button class="token-select" id="fromTokenSelect">
+                        <img class="token-icon" id="fromTokenIcon" src="" alt="">
+                        <span id="fromTokenSymbol">Select Token</span>
+                        <span>▼</span>
+                    </button>
+                    <input type="number" class="token-amount" id="fromAmount" placeholder="0.0" min="0" step="any">
+                </div>
+            </div>
+
+            <!-- Switch Button -->
+            <div class="swap-arrow">
+                <button class="swap-arrow-btn" id="switchTokens">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M16 17.01V10h-2v7.01h-3L15 21l4-3.99h-3zM9 3L5 6.99h3V14h2V6.99h3L9 3z"/>
+                    </svg>
+                </button>
+            </div>
+
+            <!-- To Token -->
+            <div class="token-input">
+                <div class="token-row">
+                    <span class="token-label">To</span>
+                    <span class="balance">Balance: <span id="toBalance">0</span></span>
+                </div>
+                <div class="input-row">
+                    <button class="token-select" id="toTokenSelect">
+                        <img class="token-icon" id="toTokenIcon" src="" alt="">
+                        <span id="toTokenSymbol">Select Token</span>
+                        <span>▼</span>
+                    </button>
+                    <input type="number" class="token-amount" id="toAmount" placeholder="0.0" min="0" step="any" readonly>
+                </div>
+            </div>
+
+            <!-- Swap Info -->
+            <div class="swap-info" id="swapInfo" style="display: none;">
+                <div class="info-row">
+                    <span class="info-label">Minimum received</span>
+                    <span class="info-value" id="minReceived">0</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Price impact</span>
+                    <span class="info-value" id="priceImpact">0%</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Slippage tolerance</span>
+                    <span class="info-value" id="slippageTolerance">1%</span>
+                </div>
+            </div>
+
+            <!-- Slippage Settings -->
+            <div class="slippage-settings" id="slippageSettings" style="display: none;">
+                <div class="slippage-title">Slippage Tolerance</div>
+                <div class="slippage-options">
+                    <div class="slippage-option" data-slippage="0.5">0.5%</div>
+                    <div class="slippage-option active" data-slippage="1">1%</div>
+                    <div class="slippage-option" data-slippage="2">2%</div>
+                    <input type="number" class="slippage-input" id="customSlippage" placeholder="Custom" min="0.1" max="50" step="0.1">
+                </div>
+            </div>
+
+            <!-- Swap Button -->
+            <button class="swap-btn" id="swapButton" disabled>Swap</button>
+        </div>
+
+        <!-- Transaction History -->
+        <div class="swap-card">
+            <h3 class="swap-title">Recent Swaps</h3>
+            <div id="transactionHistory">
+                <div class="empty-state">No recent transactions</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Token Selection Modal -->
+    <div class="modal" id="tokenModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 class="modal-title">Select a token</h3>
+                <button class="close-modal" id="closeTokenModal">×</button>
+            </div>
+            <div class="token-list" id="tokenList">
+                <!-- Tokens will be populated here -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="config.js"></script>
+    <script src="utils.js"></script>
+    <script src="tokens.js"></script>
+    <script src="wallet.js"></script>
+    <script src="swap.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
+
+  // Main application controller
+class SwapApp {
+    constructor() {
+        this.walletManager = new WalletManager();
+        this.tokenManager = new TokenManager();
+        this.swapEngine = null;
+        this.currentTokenSelect = null;
+    }
+
+    async initialize() {
+        try {
+            // Initialize wallet
+            await this.walletManager.initialize();
+            
+            // Initialize swap engine
+            this.swapEngine = new SwapEngine(this.walletManager, this.tokenManager);
+            
+            // Setup UI event listeners
+            this.setupEventListeners();
+            
+            // Listen for state changes
+            this.setupStateListeners();
+            
+            console.log('Swap App initialized successfully');
+        } catch (error) {
+            console.error('Failed to initialize app:', error);
+            this.showError('Failed to initialize application: ' + error.message);
+        }
+    }
+
+    setupEventListeners() {
+        // Wallet connection
+        document.getElementById('connectWallet').addEventListener('click', () => {
+            this.walletManager.connect().catch(error => {
+                this.showError('Failed to connect wallet: ' + error.message);
+            });
+        });
+
+        // Token selection
+        document.getElementById('fromTokenSelect').addEventListener('click', () => {
+            this.openTokenModal('from');
+        });
+
+        document.getElementById('toTokenSelect').addEventListener('click', () => {
+            this.openTokenModal('to');
+        });
+
+        // Amount inputs
+        document.getElementById('fromAmount').addEventListener('input', 
+            SwapUtils.debounce((e) => {
+                this.swapEngine.setFromAmount(e.target.value);
+            }, 500)
+        );
+
+        document.getElementById('toAmount').addEventListener('input', 
+            SwapUtils.debounce((e) => {
+                this.swapEngine.setToAmount(e.target.value);
+            }, 500)
+        );
+
+        // Switch tokens
+        document.getElementById('switchTokens').addEventListener('click', () => {
+            this.swapEngine.switchTokens();
+        });
+
+        // Swap button
+        document.getElementById('swapButton').addEventListener('click', () => {
+            this.executeSwap();
+        });
+
+        // Settings
+        document.getElementById('settingsBtn').addEventListener('click', () => {
+            this.toggleSlippageSettings();
+        });
+
+        // Slippage options
+        document.querySelectorAll('.slippage-option').forEach(option => {
+            option.addEventListener('click', (e) => {
+                const slippage = parseFloat(e.target.dataset.slippage);
+                this.swapEngine.setSlippage(slippage);
+                this.updateSlippageUI(slippage);
+            });
+        });
+
+        // Custom slippage input
+        document.getElementById('customSlippage').addEventListener('input', (e) => {
+            const slippage = parseFloat(e.target.value);
+            if (!isNaN(slippage)) {
+                this.swapEngine.setSlippage(slippage);
+                this.updateSlippageUI(slippage);
+            }
+        });
+
+        // Token modal
+        document.getElementById('closeTokenModal').addEventListener('click', () => {
+            this.closeTokenModal();
+        });
+    }
+
+    setupStateListeners() {
+        // Swap state changes
+        window.addEventListener('swapStateChanged', (event) => {
+            this.updateUI(event.detail);
+        });
+
+        // Wallet changes
+        window.addEventListener('walletChanged', (event) => {
+            this.updateWalletUI(event.detail);
+        });
+    }
+
+    updateUI(state) {
+        // Update token displays
+        if (state.fromToken) {
+            document.getElementById('fromTokenSymbol').textContent = state.fromToken.symbol;
+            document.getElementById('fromTokenIcon').src = state.fromToken.icon;
+            document.getElementById('fromBalance').textContent = state.balances[state.fromToken.symbol] || '0';
+        }
+
+        if (state.toToken) {
+            document.getElementById('toTokenSymbol').textContent = state.toToken.symbol;
+            document.getElementById('toTokenIcon').src = state.toToken.icon;
+            document.getElementById('toBalance').textContent = state.balances[state.toToken.symbol] || '0';
+        }
+
+        // Update amounts
+        document.getElementById('fromAmount').value = state.fromAmount;
+        document.getElementById('toAmount').value = state.toAmount;
+
+        // Update swap info
+        this.updateSwapInfo(state);
+
+        // Update swap button
+        this.updateSwapButton(state);
+    }
+
+    updateSwapInfo(state) {
+        const swapInfo = document.getElementById('swapInfo');
+        
+        if (state.quote) {
+            swapInfo.style.display = 'block';
+            document.getElementById('minReceived').textContent = 
+                SwapUtils.formatNumber(state.quote.minAmountOut, 6) + ' ' + state.toToken.symbol;
+            document.getElementById('priceImpact').textContent = 
+                SwapUtils.formatNumber(state.quote.priceImpact, 2) + '%';
+            document.getElementById('slippageTolerance').textContent = 
+                state.slippage + '%';
+            
+            // Color code price impact
+            const priceImpactElement = document.getElementById('priceImpact');
+            priceImpactElement.className = 'info-value';
+            if (state.quote.priceImpact > 3) {
+                priceImpactElement.classList.add('high');
+            } else if (state.quote.priceImpact > 1) {
+                priceImpactElement.classList.add('medium');
+            }
+        } else {
+            swapInfo.style.display = 'none';
+        }
+    }
+
+    updateSwapButton(state) {
+        const button = document.getElementById('swapButton');
+        const validation = this.swapEngine.getSwapValidation();
+
+        button.disabled = !validation.isValid || state.isSwapping;
+        
+        if (state.isSwapping) {
+            button.textContent = 'Swapping...';
+            button.classList.add('loading');
+        } else {
+            button.textContent = validation.isValid ? 'Swap' : validation.error;
+            button.classList.remove('loading');
+        }
+    }
+
+    updateWalletUI(walletState) {
+        const button = document.getElementById('connectWallet');
+        
+        if (walletState.isConnected) {
+            button.textContent = SwapUtils.shortenAddress(walletState.address);
+            button.classList.add('connected');
+        } else {
+            button.textContent = 'Connect Wallet';
+            button.classList.remove('connected');
+        }
+    }
+
+    updateSlippageUI(slippage) {
+        // Update active slippage option
+        document.querySelectorAll('.slippage-option').forEach(option => {
+            option.classList.remove('active');
+        });
+
+        // Find matching option or use custom
+        const matchingOption = document.querySelector(`[data-slippage="${slippage}"]`);
+        if (matchingOption) {
+            matchingOption.classList.add('active');
+            document.getElementById('customSlippage').value = '';
+        } else {
+            document.getElementById('customSlippage').value = slippage;
+        }
+    }
+
+    openTokenModal(type) {
+        this.currentTokenSelect = type;
+        const modal = document.getElementById('tokenModal');
+        const tokenList = document.getElementById('tokenList');
+        
+        // Populate token list
+        tokenList.innerHTML = '';
+        this.tokenManager.tokens.forEach(token => {
+            const tokenItem = document.createElement('div');
+            tokenItem.className = 'token-item';
+            tokenItem.innerHTML = `
+                <img class="token-icon" src="${token.icon}" alt="${token.symbol}">
+                <div class="token-info">
+                    <div class="token-name">${token.name}</div>
+                    <div class="token-symbol">${token.symbol}</div>
+                </div>
+                <div class="token-balance">${this.swapEngine.state.balances[token.symbol] || '0'}</div>
+            `;
+            tokenItem.addEventListener('click', () => this.selectToken(token));
+            tokenList.appendChild(tokenItem);
+        });
+        
+        modal.style.display = 'flex';
+    }
+
+    closeTokenModal() {
+        document.getElementById('tokenModal').style.display = 'none';
+        this.currentTokenSelect = null;
+    }
+
+    selectToken(token) {
+        if (this.currentTokenSelect === 'from') {
+            this.swapEngine.setFromToken(token);
+        } else if (this.currentTokenSelect === 'to') {
+            this.swapEngine.setToToken(token);
+        }
+        this.closeTokenModal();
+    }
+
+    async executeSwap() {
+        try {
+            const receipt = await this.swapEngine.executeSwap();
+            this.showSuccess('Swap completed successfully!');
+            
+            // Add to transaction history
+            this.addTransactionToHistory(receipt);
+            
+        } catch (error) {
+            console.error('Swap failed:', error);
+            this.showError('Swap failed: ' + error.message);
+        }
+    }
+
+    addTransactionToHistory(receipt) {
+        const historyElement = document.getElementById('transactionHistory');
+        const transactionElement = document.createElement('div');
+        transactionElement.className = 'transaction-item';
+        transactionElement.innerHTML = `
+            <div class="transaction-hash">
+                <a href="${SwapUtils.getExplorerUrl(receipt.transactionHash)}" target="_blank">
+                    ${SwapUtils.shortenAddress(receipt.transactionHash)}
+                </a>
+            </div>
+            <div class="transaction-status success">Confirmed</div>
+        `;
+        
+        historyElement.insertBefore(transactionElement, historyElement.firstChild);
+        
+        // Remove empty state if it exists
+        const emptyState = historyElement.querySelector('.empty-state');
+        if (emptyState) {
+            emptyState.remove();
+        }
+    }
+
+    toggleSlippageSettings() {
+        const settings = document.getElementById('slippageSettings');
+        settings.style.display = settings.style.display === 'block' ? 'none' : 'block';
+    }
+
+    showError(message) {
+        // Simple error display - you can enhance this with a proper notification system
+        alert('Error: ' + message);
+    }
+
+    showSuccess(message) {
+        // Simple success display
+        alert('Success: ' + message);
+    }
+}
+
+// Initialize the application when DOM is loaded
+document.addEventListener('DOMContentLoaded', async () => {
+    const app = new SwapApp();
+    await app.initialize();
+});
+          
+                                                                          
