@@ -8,6 +8,41 @@
   <title>CozySwap — Plasma DEX</title>
   <link rel="icon" href="https://photos.pinksale.finance/file/pinksale-logo-upload/1759992605150-e3175ba3ea1d9672e44128a60a685807.JPG" />
   <style>
+
+/* Tombol aktif gradien nyala */
+.active-btn {
+  background: linear-gradient(90deg, #3b82f6, #8b5cf6);
+  color: #fff;
+  border: none;
+  border-radius: 10px;
+  padding: 8px 16px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease-in-out;
+  box-shadow: 0 0 10px rgba(139, 92, 246, 0.5);
+}
+
+/* Efek hover glowing */
+.active-btn:hover {
+  transform: scale(1.03);
+  box-shadow: 0 0 16px rgba(59, 130, 246, 0.8);
+}
+
+/* Tombol ghost (tetap gelap untuk yg lain, misal Staking) */
+.ghost {
+  background: rgba(255, 255, 255, 0.08);
+  color: #ccc;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  padding: 8px 16px;
+  cursor: pointer;
+  transition: all 0.2s ease-in-out;
+}
+
+.ghost:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
     :root{--bg:#0b0b0f;--card:#111216;--muted:#9aa0a6;--accent1:#6c63ff;--accent2:#00c6ff}
     *{box-sizing:border-box}
     html,body{height:100%;margin:0;background:var(--bg);color:#e6eef8;font-family:Inter,system-ui,Arial}
