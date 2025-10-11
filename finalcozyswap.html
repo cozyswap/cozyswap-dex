@@ -1,4 +1,4 @@
-setelah perbaikn wallet konek
+8setelah perbaikn wallet konek
 
 <!doctype html>
 <html lang="en">
@@ -712,11 +712,26 @@ txHashEl.innerHTML = `
   await updateBalances();
   computeOutput();
 
-  const addLiquidityUrl = '#';
-  document.getElementById('toLiquidity').onclick = () => {
-    if (addLiquidityUrl === '#') alert('Add Liquidity link not configured. Edit addLiquidityUrl in the HTML.');
-    else window.open(addLiquidityUrl, '_blank');
-  };
+  // === Custom Navigation URLs ===
+const addLiquidityUrl = 'https://cozyswap2.github.io/Cozyswap/'; // 🔗 ganti dengan link GitHub kamu
+const stakingUrl = 'https'; // 🔗 kalau nanti kamu punya halaman staking
+
+document.getElementById('toLiquidity').onclick = () => {
+  if (!addLiquidityUrl.startsWith('http')) {
+    alert('Add Liquidity link invalid.');
+  } else {
+    window.location.href = addLiquidityUrl; // buka di tab yang sama, biar smooth
+  }
+};
+
+document.getElementById('toStaking').onclick = () => {
+  if (!stakingUrl.startsWith('http')) {
+    alert('Staking link invalid.');
+  } else {
+    window.location.href = stakingUrl;
+  }
+};
+
 
   function debounce(fn, ms) {
     let t;
