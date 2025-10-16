@@ -269,7 +269,7 @@
           </div>
           <div class="p-3 bg-black bg-opacity-20 rounded-lg">
             <div class="small muted">Current Pair</div>
-            <div id="currentPair" class="font-semibold">—</div>
+            <div id="currentPair" class="font-semibold">COZY/CRY BABY</div>
           </div>
           <div class="p-3 bg-black bg-opacity-20 rounded-lg">
             <div class="small muted">Last Action</div>
@@ -310,7 +310,7 @@
           <button id="btnClearLog" class="px-3 py-1 rounded-lg border border-gray-600 text-sm">Clear Log</button>
         </div>
         <div id="realActivityLog" class="max-h-80 overflow-y-auto space-y-2 small">
-          <div class="text-center muted py-8">No trading activity yet. Add custom tokens and start trading!</div>
+          <div class="text-center muted py-8">No trading activity yet. Connect wallet and approve tokens to start!</div>
         </div>
       </div>
 
@@ -409,7 +409,58 @@ const LS_BOT_WALLETS = 'cozy_advanced_bot_wallets';
 /* ============================
   DOM Elements
    ============================ */
-// ... (semua DOM elements sama seperti sebelumnya)
+const customBaseToken = document.getElementById('customBaseToken');
+const btnAddCustomToken = document.getElementById('btnAddCustomToken');
+const quoteToken = document.getElementById('quoteToken');
+const customQuoteToken = document.getElementById('customQuoteToken');
+const tradeMode = document.getElementById('tradeMode');
+const tradingStrategy = document.getElementById('tradingStrategy');
+const minAmount = document.getElementById('minAmount');
+const maxAmount = document.getElementById('maxAmount');
+const tradeInterval = document.getElementById('tradeInterval');
+const slippage = document.getElementById('slippage');
+const gasMultiplier = document.getElementById('gasMultiplier');
+const chkMainWalletTrade = document.getElementById('chkMainWalletTrade');
+const chkAutoApprove = document.getElementById('chkAutoApprove');
+const chkSkipFailed = document.getElementById('chkSkipFailed');
+const chkRandomAmounts = document.getElementById('chkRandomAmounts');
+const chkMainWallet = document.getElementById('chkMainWallet');
+const btnToggleAllWallets = document.getElementById('btnToggleAllWallets');
+const activeWalletCount = document.getElementById('activeWalletCount');
+const totalWalletCount = document.getElementById('totalWalletCount');
+const readyWalletCount = document.getElementById('readyWalletCount');
+const totalBuys = document.getElementById('totalBuys');
+const totalSells = document.getElementById('totalSells');
+const successfulTrades = document.getElementById('successfulTrades');
+const failedTrades = document.getElementById('failedTrades');
+const totalVolume = document.getElementById('totalVolume');
+const gasUsed = document.getElementById('gasUsed');
+const tradingStatus = document.getElementById('tradingStatus');
+const currentPair = document.getElementById('currentPair');
+const lastAction = document.getElementById('lastAction');
+const nextTradeCountdown = document.getElementById('nextTradeCountdown');
+const currentBaseInfo = document.getElementById('currentBaseInfo');
+const currentBaseAddress = document.getElementById('currentBaseAddress');
+const currentQuoteInfo = document.getElementById('currentQuoteInfo');
+const currentQuoteAddress = document.getElementById('currentQuoteAddress');
+const pairStatus = document.getElementById('pairStatus');
+const realActivityLog = document.getElementById('realActivityLog');
+const btnClearLog = document.getElementById('btnClearLog');
+const btnApproveTokens = document.getElementById('btnApproveTokens');
+const btnCheckAllowances = document.getElementById('btnCheckAllowances');
+const btnStartRealTrade = document.getElementById('btnStartRealTrade');
+const btnStopRealTrade = document.getElementById('btnStopRealTrade');
+const btnEmergencyStop = document.getElementById('btnEmergencyStop');
+const botWalletsList = document.getElementById('botWalletsList');
+const btnAddBotWallet = document.getElementById('btnAddBotWallet');
+const addWalletModal = document.getElementById('addWalletModal');
+const newWalletPrivateKey = document.getElementById('newWalletPrivateKey');
+const newWalletName = document.getElementById('newWalletName');
+const btnConfirmAddWallet = document.getElementById('btnConfirmAddWallet');
+const btnCancelAddWallet = document.getElementById('btnCancelAddWallet');
+const mainWalletBalance = document.getElementById('mainWalletBalance');
+const mainWalletAllowance = document.getElementById('mainWalletAllowance');
+const mainWalletStatus = document.getElementById('mainWalletStatus');
 
 /* ============================
   Helper Functions
@@ -516,6 +567,272 @@ function startCountdown() {
 }
 
 /* ============================
+  WALLET MANAGEMENT - REAL
+   ============================ */
+function loadBotWallets() {
+  const savedWallets = loadLS(LS_BOT_WALLETS, []);
+  botWallets = savedWallets.map(w => ({
+    ...w,
+    active: w.active !== undefined ? w.active : true
+  }));
+  renderBotWallets();
+  updateWalletStats();
+}
+
+function saveBotWallets() {
+  const walletsToSave = botWallets.map(w => ({
+    address: w.address,
+    name: w.name,
+    active: w.active,
+    privateKey: w.privateKey
+  }));
+  saveLS(LS_BOT_WALLETS, walletsToSave);
+}
+
+function renderBotWallets() {
+  if (!botWalletsList) return;
+  
+  botWalletsList.innerHTML = '';
+  
+  botWallets.forEach((wallet, index) => {
+    const walletEl = document.createElement('div');
+    const isActive = wallet.active;
+    
+    walletEl.className = `flex items-center justify-between p-3 rounded-lg ${isActive ? 'bg-black bg-opacity-30' : 'bg-red-900 bg-opacity-20'}`;
+    walletEl.innerHTML = `
+      <div class="flex items-center gap-3">
+        <input type="checkbox" class="checkbox-custom wallet-toggle" data-index="${index}" ${isActive ? 'checked' : ''}>
+        <div>
+          <div class="font-medium">${wallet.name || `Bot ${index + 1}`}</div>
+          <div class="muted small">${shortAddr(wallet.address)}</div>
+          <div class="muted small">Balance: <span id="botBalance${index}">Loading...</span></div>
+          <div class="muted small">Allowance: <span id="botAllowance${index}">Checking...</span></div>
+        </div>
+      </div>
+      <div class="flex gap-2">
+        <button class="remove-wallet text-red-400 text-xs px-2 py-1 border border-red-400 rounded" data-index="${index}">Remove</button>
+      </div>
+    `;
+    botWalletsList.appendChild(walletEl);
+    
+    updateBotWalletInfo(index);
+  });
+  
+  document.querySelectorAll('.wallet-toggle').forEach(btn => {
+    btn.addEventListener('change', (e) => {
+      const index = parseInt(e.target.getAttribute('data-index'));
+      toggleBotWallet(index, e.target.checked);
+    });
+  });
+  
+  document.querySelectorAll('.remove-wallet').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      const index = parseInt(e.target.getAttribute('data-index'));
+      removeBotWallet(index);
+    });
+  });
+  
+  updateWalletStats();
+}
+
+async function updateBotWalletInfo(index) {
+  if (!botWallets[index]) return;
+  
+  try {
+    const wallet = botWallets[index];
+    const walletSigner = new ethersLib.Wallet(wallet.privateKey, provider);
+    const address = await walletSigner.getAddress();
+    
+    const balance = await provider.getBalance(address);
+    const balanceInEth = ethersLib.utils.formatEther(balance);
+    document.getElementById(`botBalance${index}`).textContent = `${parseFloat(balanceInEth).toFixed(4)} XPL`;
+    
+    if (currentTradingPair.base.address !== 'XPL_NATIVE') {
+      const tokenContract = new ethersLib.Contract(currentTradingPair.base.address, ERC20_ABI, provider);
+      const allowance = await tokenContract.allowance(address, ROUTER);
+      const allowanceFormatted = ethersLib.utils.formatUnits(allowance, currentTradingPair.base.decimals);
+      
+      if (allowance.gt(0)) {
+        document.getElementById(`botAllowance${index}`).textContent = `${parseFloat(allowanceFormatted).toFixed(4)} ✅`;
+        document.getElementById(`botAllowance${index}`).className = 'muted small text-green-400';
+      } else {
+        document.getElementById(`botAllowance${index}`).textContent = 'Not Approved ❌';
+        document.getElementById(`botAllowance${index}`).className = 'muted small text-red-400';
+      }
+    } else {
+      document.getElementById(`botAllowance${index}`).textContent = 'Native (Auto) ✅';
+      document.getElementById(`botAllowance${index}`).className = 'muted small text-green-400';
+    }
+    
+  } catch (error) {
+    console.error('Error updating bot wallet info:', error);
+    document.getElementById(`botBalance${index}`).textContent = 'Error';
+    document.getElementById(`botAllowance${index}`).textContent = 'Error';
+  }
+}
+
+function toggleBotWallet(index, active) {
+  if (botWallets[index]) {
+    botWallets[index].active = active;
+    saveBotWallets();
+    updateWalletStats();
+    addRealActivityLog(`${active ? '✅ Activated' : '🔴 Deactivated'} ${botWallets[index].name || `Bot ${index + 1}`}`, 'info');
+  }
+}
+
+function toggleAllWallets() {
+  const allActive = botWallets.every(w => w.active);
+  const newState = !allActive;
+  
+  botWallets.forEach(wallet => {
+    wallet.active = newState;
+  });
+  
+  saveBotWallets();
+  renderBotWallets();
+  addRealActivityLog(`${newState ? '✅ Activated' : '🔴 Deactivated'} all bot wallets`, 'info');
+}
+
+function updateWalletStats() {
+  const totalWallets = 1 + botWallets.length;
+  const activeWalletsCount = (chkMainWallet && chkMainWallet.checked ? 1 : 0) + botWallets.filter(w => w.active).length;
+  
+  let readyWalletsCount = 0;
+  
+  if (activeWalletCount) activeWalletCount.textContent = activeWalletsCount;
+  if (totalWalletCount) totalWalletCount.textContent = totalWallets;
+  if (readyWalletCount) readyWalletCount.textContent = readyWalletsCount;
+}
+
+function confirmAddWallet() {
+  const privateKey = newWalletPrivateKey.value.trim();
+  const name = newWalletName.value.trim() || `Bot ${botWallets.length + 1}`;
+  
+  if (!privateKey) {
+    alert('Please enter a private key');
+    return;
+  }
+  
+  try {
+    const wallet = new ethersLib.Wallet(privateKey);
+    const address = wallet.address;
+    
+    if (botWallets.some(w => w.address.toLowerCase() === address.toLowerCase())) {
+      alert('This wallet is already added');
+      return;
+    }
+    
+    botWallets.push({
+      address: address,
+      privateKey: privateKey,
+      name: name,
+      active: true
+    });
+    
+    saveBotWallets();
+    renderBotWallets();
+    
+    newWalletPrivateKey.value = '';
+    newWalletName.value = '';
+    addWalletModal.classList.add('hidden');
+    
+    addRealActivityLog(`✅ Added bot wallet: ${name} (${shortAddr(address)})`, 'success');
+    
+  } catch (error) {
+    alert('Invalid private key. Please check and try again.');
+    console.error('Error adding wallet:', error);
+  }
+}
+
+function removeBotWallet(index) {
+  if (botWallets[index]) {
+    const wallet = botWallets[index];
+    if (confirm(`Are you sure you want to remove ${wallet.name || `Bot ${index + 1}`}?`)) {
+      botWallets.splice(index, 1);
+      saveBotWallets();
+      renderBotWallets();
+      addRealActivityLog(`🗑️ Removed bot wallet: ${wallet.name || `Bot ${index + 1}`}`, 'warning');
+    }
+  }
+}
+
+/* ============================
+  MAIN WALLET CONNECTION
+   ============================ */
+async function connectMainWallet() {
+  try {
+    if (typeof window.ethereum !== 'undefined') {
+      const accounts = await window.ethereum.request({ 
+        method: 'eth_requestAccounts' 
+      });
+      
+      mainAccount = accounts[0];
+      provider = new ethersLib.providers.Web3Provider(window.ethereum);
+      mainSigner = provider.getSigner();
+      routerContract = new ethersLib.Contract(ROUTER, ROUTER_ABI, mainSigner);
+      
+      document.getElementById('walletAddress').textContent = shortAddr(mainAccount);
+      document.getElementById('connectBtn').textContent = 'Connected';
+      document.getElementById('connectBtn').classList.add('wallet-active');
+      document.getElementById('mainWalletStatus').textContent = 'Connected';
+      document.getElementById('mainWalletStatus').className = 'text-green-400 text-sm';
+      
+      addRealActivityLog(`✅ Wallet connected: ${shortAddr(mainAccount)}`, 'success');
+      
+      updateMainWalletInfo();
+      botWallets.forEach((_, index) => updateBotWalletInfo(index));
+      
+    } else {
+      throw new Error('MetaMask or other Web3 wallet not found. Please install MetaMask.');
+    }
+  } catch (error) {
+    console.error('Wallet connection error:', error);
+    addRealActivityLog(`❌ Failed to connect wallet: ${error.message}`, 'error');
+    alert('Failed to connect wallet. Please make sure you have MetaMask installed and try again.');
+  }
+}
+
+async function updateMainWalletInfo() {
+  if (!mainSigner) return;
+  
+  try {
+    const address = await mainSigner.getAddress();
+    const balance = await provider.getBalance(address);
+    const balanceInEth = ethersLib.utils.formatEther(balance);
+    
+    if (mainWalletBalance) {
+      mainWalletBalance.textContent = `Balance: ${parseFloat(balanceInEth).toFixed(4)} XPL`;
+    }
+    
+    if (currentTradingPair.base.address !== 'XPL_NATIVE') {
+      const tokenContract = new ethersLib.Contract(currentTradingPair.base.address, ERC20_ABI, mainSigner);
+      const allowance = await tokenContract.allowance(address, ROUTER);
+      const allowanceFormatted = ethersLib.utils.formatUnits(allowance, currentTradingPair.base.decimals);
+      
+      if (mainWalletAllowance) {
+        if (allowance.gt(0)) {
+          mainWalletAllowance.textContent = `Allowance: ${parseFloat(allowanceFormatted).toFixed(4)} ✅`;
+          mainWalletAllowance.className = 'muted small text-green-400';
+        } else {
+          mainWalletAllowance.textContent = `Allowance: Not Approved ❌`;
+          mainWalletAllowance.className = 'muted small text-red-400';
+        }
+      }
+    } else {
+      if (mainWalletAllowance) {
+        mainWalletAllowance.textContent = `Allowance: Native (Auto) ✅`;
+        mainWalletAllowance.className = 'muted small text-green-400';
+      }
+    }
+    
+  } catch (error) {
+    console.error('Error updating main wallet info:', error);
+    if (mainWalletBalance) mainWalletBalance.textContent = 'Balance: Error';
+    if (mainWalletAllowance) mainWalletAllowance.textContent = 'Allowance: Error';
+  }
+}
+
+/* ============================
   REAL TRADING EXECUTION FUNCTIONS
    ============================ */
 async function executeRealTrade() {
@@ -528,7 +845,6 @@ async function executeRealTrade() {
     const maxAmt = parseFloat(document.getElementById('maxAmount').value) || 0.01;
     const slippagePct = parseFloat(document.getElementById('slippage').value) || 5;
     
-    // Get active wallets
     const activeWallets = getActiveWallets();
     
     if (activeWallets.length === 0) {
@@ -536,10 +852,7 @@ async function executeRealTrade() {
       return;
     }
     
-    // Select random active wallet
     const selectedWallet = activeWallets[Math.floor(Math.random() * activeWallets.length)];
-    
-    // Determine trade type based on mode and strategy
     const tradeType = determineTradeType(mode, strategy);
     const tradeAmount = calculateTradeAmount(minAmt, maxAmt, strategy);
     
@@ -567,7 +880,6 @@ async function executeRealBuy(wallet, amount, slippagePct) {
     const path = [currentTradingPair.quote.address, currentTradingPair.base.address];
     
     if (currentTradingPair.quote.address === 'XPL_NATIVE') {
-      // Buy with native XPL
       const amounts = await routerContract.getAmountsOut(amountIn, [WXPL, currentTradingPair.base.address]);
       const amountOutMin = amounts[1].mul(100 - slippagePct).div(100);
       
@@ -588,7 +900,6 @@ async function executeRealBuy(wallet, amount, slippagePct) {
       addRealActivityLog(`📜 TX: <a href="${SCAN_BASE}${receipt.transactionHash}" target="_blank" class="tx-link">View on Explorer</a>`, 'info');
       
     } else {
-      // Buy with token
       const amounts = await routerContract.getAmountsOut(amountIn, [currentTradingPair.quote.address, currentTradingPair.base.address]);
       const amountOutMin = amounts[1].mul(100 - slippagePct).div(100);
       
@@ -634,7 +945,6 @@ async function executeRealSell(wallet, amount, slippagePct) {
     const path = [currentTradingPair.base.address, currentTradingPair.quote.address];
     
     if (currentTradingPair.quote.address === 'XPL_NATIVE') {
-      // Sell for native XPL
       const amounts = await routerContract.getAmountsOut(amountIn, [currentTradingPair.base.address, WXPL]);
       const amountOutMin = amounts[1].mul(100 - slippagePct).div(100);
       
@@ -656,7 +966,6 @@ async function executeRealSell(wallet, amount, slippagePct) {
       addRealActivityLog(`📜 TX: <a href="${SCAN_BASE}${receipt.transactionHash}" target="_blank" class="tx-link">View on Explorer</a>`, 'info');
       
     } else {
-      // Sell for token
       const amounts = await routerContract.getAmountsOut(amountIn, [currentTradingPair.base.address, currentTradingPair.quote.address]);
       const amountOutMin = amounts[1].mul(100 - slippagePct).div(100);
       
@@ -695,7 +1004,6 @@ async function executeRealSell(wallet, amount, slippagePct) {
 function getActiveWallets() {
   const wallets = [];
   
-  // Include main wallet if enabled and checked
   if (chkMainWalletTrade && chkMainWalletTrade.checked && chkMainWallet && chkMainWallet.checked && mainSigner) {
     wallets.push({
       signer: mainSigner,
@@ -705,7 +1013,6 @@ function getActiveWallets() {
     });
   }
   
-  // Include active bot wallets
   botWallets.forEach(wallet => {
     if (wallet.active && wallet.privateKey) {
       try {
@@ -790,8 +1097,7 @@ async function approveWalletTokens(signer, walletName) {
     const tokenContract = new ethersLib.Contract(currentTradingPair.base.address, ERC20_ABI, signer);
     const approveAmount = ethersLib.constants.MaxUint256;
     
-    // Check current allowance first
-    const currentAllowance = await tokenContract.allowance(signer.getAddress(), ROUTER);
+    const currentAllowance = await tokenContract.allowance(await signer.getAddress(), ROUTER);
     
     if (currentAllowance.gte(ethersLib.utils.parseEther('1000'))) {
       addRealActivityLog(`✅ ${walletName}: Already approved`, 'success');
@@ -811,6 +1117,20 @@ async function approveWalletTokens(signer, walletName) {
   }
 }
 
+async function checkAllAllowances() {
+  addRealActivityLog('Checking token allowances...', 'info');
+  
+  if (mainSigner) {
+    await updateMainWalletInfo();
+  }
+  
+  for (let i = 0; i < botWallets.length; i++) {
+    await updateBotWalletInfo(i);
+  }
+  
+  addRealActivityLog('✅ Allowance check completed', 'success');
+}
+
 /* ============================
   TRADING CONTROLS - REAL
    ============================ */
@@ -820,7 +1140,6 @@ async function startRealTrading() {
   try {
     const interval = parseInt(tradeInterval.value) || 30;
     
-    // Check if we have approved tokens
     if (currentTradingPair.base.address !== 'XPL_NATIVE') {
       addRealActivityLog('⚠️ Please approve tokens first before starting trading', 'warning');
       return;
@@ -836,10 +1155,8 @@ async function startRealTrading() {
     nextTradeTime = Date.now() + interval * 1000;
     startCountdown();
     
-    // Execute first trade immediately
     executeRealTrade();
     
-    // Set up interval for subsequent trades
     realTradeInterval = setInterval(() => {
       if (isRealTrading) {
         executeRealTrade();
@@ -878,306 +1195,123 @@ function emergencyStop() {
   addRealActivityLog('🚨 EMERGENCY STOP - All trading halted', 'error');
 }
 
-
 /* ============================
-  WALLET MANAGEMENT - REAL
+  TOKEN MANAGEMENT
    ============================ */
-
-// Load bot wallets from localStorage
-function loadBotWallets() {
-  const savedWallets = loadLS(LS_BOT_WALLETS, []);
-  botWallets = savedWallets.map(w => ({
-    ...w,
-    active: w.active !== undefined ? w.active : true
-  }));
-  renderBotWallets();
-  updateWalletStats();
-}
-
-// Save bot wallets to localStorage
-function saveBotWallets() {
-  const walletsToSave = botWallets.map(w => ({
-    address: w.address,
-    name: w.name,
-    active: w.active,
-    privateKey: w.privateKey // IMPORTANT: For real trading, store private key
-  }));
-  saveLS(LS_BOT_WALLETS, walletsToSave);
-}
-
-// Render bot wallets list
-function renderBotWallets() {
-  if (!botWalletsList) return;
+async function addCustomToken() {
+  const tokenAddress = customBaseToken.value.trim();
   
-  botWalletsList.innerHTML = '';
-  
-  botWallets.forEach((wallet, index) => {
-    const walletEl = document.createElement('div');
-    const isActive = wallet.active;
-    
-    walletEl.className = `flex items-center justify-between p-3 rounded-lg ${isActive ? 'bg-black bg-opacity-30' : 'bg-red-900 bg-opacity-20'}`;
-    walletEl.innerHTML = `
-      <div class="flex items-center gap-3">
-        <input type="checkbox" class="checkbox-custom wallet-toggle" data-index="${index}" ${isActive ? 'checked' : ''}>
-        <div>
-          <div class="font-medium">${wallet.name || `Bot ${index + 1}`}</div>
-          <div class="muted small">${shortAddr(wallet.address)}</div>
-          <div class="muted small">Balance: <span id="botBalance${index}">Loading...</span></div>
-          <div class="muted small">Allowance: <span id="botAllowance${index}">Checking...</span></div>
-        </div>
-      </div>
-      <div class="flex gap-2">
-        <button class="remove-wallet text-red-400 text-xs px-2 py-1 border border-red-400 rounded" data-index="${index}">Remove</button>
-      </div>
-    `;
-    botWalletsList.appendChild(walletEl);
-    
-    // Update wallet balance and allowance
-    updateBotWalletInfo(index);
-  });
-  
-  // Add event listeners
-  document.querySelectorAll('.wallet-toggle').forEach(btn => {
-    btn.addEventListener('change', (e) => {
-      const index = parseInt(e.target.getAttribute('data-index'));
-      toggleBotWallet(index, e.target.checked);
-    });
-  });
-  
-  document.querySelectorAll('.remove-wallet').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      const index = parseInt(e.target.getAttribute('data-index'));
-      removeBotWallet(index);
-    });
-  });
-  
-  updateWalletStats();
-}
-
-// Update bot wallet balance and allowance info
-async function updateBotWalletInfo(index) {
-  if (!botWallets[index]) return;
-  
-  try {
-    const wallet = botWallets[index];
-    const walletSigner = new ethersLib.Wallet(wallet.privateKey, provider);
-    const address = await walletSigner.getAddress();
-    
-    // Update balance
-    const balance = await provider.getBalance(address);
-    const balanceInEth = ethersLib.utils.formatEther(balance);
-    document.getElementById(`botBalance${index}`).textContent = `${parseFloat(balanceInEth).toFixed(4)} XPL`;
-    
-    // Update allowance if base token is not native
-    if (currentTradingPair.base.address !== 'XPL_NATIVE') {
-      const tokenContract = new ethersLib.Contract(currentTradingPair.base.address, ERC20_ABI, provider);
-      const allowance = await tokenContract.allowance(address, ROUTER);
-      const allowanceFormatted = ethersLib.utils.formatUnits(allowance, currentTradingPair.base.decimals);
-      
-      if (allowance.gt(0)) {
-        document.getElementById(`botAllowance${index}`).textContent = `${parseFloat(allowanceFormatted).toFixed(4)} ✅`;
-        document.getElementById(`botAllowance${index}`).className = 'muted small text-green-400';
-      } else {
-        document.getElementById(`botAllowance${index}`).textContent = 'Not Approved ❌';
-        document.getElementById(`botAllowance${index}`).className = 'muted small text-red-400';
-      }
-    } else {
-      document.getElementById(`botAllowance${index}`).textContent = 'Native (Auto) ✅';
-      document.getElementById(`botAllowance${index}`).className = 'muted small text-green-400';
-    }
-    
-  } catch (error) {
-    console.error('Error updating bot wallet info:', error);
-    document.getElementById(`botBalance${index}`).textContent = 'Error';
-    document.getElementById(`botAllowance${index}`).textContent = 'Error';
+  if (!tokenAddress) {
+    alert('Please enter a token address');
+    return;
   }
-}
-
-// Toggle bot wallet active state
-function toggleBotWallet(index, active) {
-  if (botWallets[index]) {
-    botWallets[index].active = active;
-    saveBotWallets();
-    updateWalletStats();
-    addRealActivityLog(`${active ? '✅ Activated' : '🔴 Deactivated'} ${botWallets[index].name || `Bot ${index + 1}`}`, 'info');
-  }
-}
-
-// Toggle all wallets
-function toggleAllWallets() {
-  const allActive = botWallets.every(w => w.active);
-  const newState = !allActive;
   
-  botWallets.forEach(wallet => {
-    wallet.active = newState;
-  });
-  
-  saveBotWallets();
-  renderBotWallets();
-  addRealActivityLog(`${newState ? '✅ Activated' : '🔴 Deactivated'} all bot wallets`, 'info');
-}
-
-// Update wallet statistics
-function updateWalletStats() {
-  const totalWallets = 1 + botWallets.length; // Main + bots
-  const activeWalletsCount = (chkMainWallet && chkMainWallet.checked ? 1 : 0) + botWallets.filter(w => w.active).length;
-  
-  // Count ready wallets (have balance and allowance)
-  let readyWalletsCount = 0;
-  
-  if (activeWalletCount) activeWalletCount.textContent = activeWalletsCount;
-  if (totalWalletCount) totalWalletCount.textContent = totalWallets;
-  if (readyWalletCount) readyWalletCount.textContent = readyWalletsCount;
-}
-
-// Add new bot wallet
-function confirmAddWallet() {
-  const privateKey = newWalletPrivateKey.value.trim();
-  const name = newWalletName.value.trim() || `Bot ${botWallets.length + 1}`;
-  
-  if (!privateKey) {
-    alert('Please enter a private key');
+  if (!ethersLib.utils.isAddress(tokenAddress)) {
+    alert('Please enter a valid token address');
     return;
   }
   
   try {
-    // Validate private key and get address
-    const wallet = new ethersLib.Wallet(privateKey);
-    const address = wallet.address;
+    addRealActivityLog(`Adding custom token: ${shortAddr(tokenAddress)}...`, 'info');
     
-    // Check if wallet already exists
-    if (botWallets.some(w => w.address.toLowerCase() === address.toLowerCase())) {
-      alert('This wallet is already added');
-      return;
+    const tokenContract = new ethersLib.Contract(tokenAddress, ERC20_ABI, provider);
+    const [symbol, decimals] = await Promise.all([
+      tokenContract.symbol().catch(() => 'UNKNOWN'),
+      tokenContract.decimals().catch(() => 18)
+    ]);
+    
+    currentTradingPair.base = {
+      symbol: symbol,
+      address: tokenAddress,
+      decimals: decimals
+    };
+    
+    updateCurrentPair();
+    customBaseToken.value = '';
+    
+    addRealActivityLog(`✅ Added token: ${symbol} (${decimals} decimals)`, 'success');
+    
+    if (chkAutoApprove && chkAutoApprove.checked) {
+      setTimeout(() => approveAllTokens(), 1000);
+    } else {
+      checkAllAllowances();
     }
     
-    // Add to bot wallets
-    botWallets.push({
-      address: address,
-      privateKey: privateKey, // Store for real trading
-      name: name,
-      active: true
-    });
-    
-    saveBotWallets();
-    renderBotWallets();
-    
-    // Clear and close modal
-    newWalletPrivateKey.value = '';
-    newWalletName.value = '';
-    addWalletModal.classList.add('hidden');
-    
-    addRealActivityLog(`✅ Added bot wallet: ${name} (${shortAddr(address)})`, 'success');
-    
   } catch (error) {
-    alert('Invalid private key. Please check and try again.');
-    console.error('Error adding wallet:', error);
+    console.error('Error adding token:', error);
+    addRealActivityLog(`❌ Failed to add token: ${error.message}`, 'error');
   }
 }
 
-// Remove bot wallet
-function removeBotWallet(index) {
-  if (botWallets[index]) {
-    const wallet = botWallets[index];
-    if (confirm(`Are you sure you want to remove ${wallet.name || `Bot ${index + 1}`}?`)) {
-      botWallets.splice(index, 1);
-      saveBotWallets();
-      renderBotWallets();
-      addRealActivityLog(`🗑️ Removed bot wallet: ${wallet.name || `Bot ${index + 1}`}`, 'warning');
+function handleQuoteTokenChange() {
+  const selectedValue = quoteToken.value;
+  
+  if (selectedValue === 'CUSTOM') {
+    customQuoteToken.classList.remove('hidden');
+    customQuoteToken.focus();
+  } else {
+    customQuoteToken.classList.add('hidden');
+    
+    if (selectedValue === 'XPL_NATIVE') {
+      currentTradingPair.quote = DEFAULT_TOKENS.XPL;
+    } else if (selectedValue === DEFAULT_TOKENS.CRY.address) {
+      currentTradingPair.quote = DEFAULT_TOKENS.CRY;
     }
+    
+    updateCurrentPair();
+    checkAllAllowances();
+  }
+}
+
+async function addCustomQuoteToken() {
+  const tokenAddress = customQuoteToken.value.trim();
+  
+  if (!tokenAddress) {
+    alert('Please enter a token address');
+    return;
+  }
+  
+  if (!ethersLib.utils.isAddress(tokenAddress)) {
+    alert('Please enter a valid token address');
+    return;
+  }
+  
+  try {
+    addRealActivityLog(`Adding custom quote token: ${shortAddr(tokenAddress)}...`, 'info');
+    
+    const tokenContract = new ethersLib.Contract(tokenAddress, ERC20_ABI, provider);
+    const [symbol, decimals] = await Promise.all([
+      tokenContract.symbol().catch(() => 'UNKNOWN'),
+      tokenContract.decimals().catch(() => 18)
+    ]);
+    
+    currentTradingPair.quote = {
+      symbol: symbol,
+      address: tokenAddress,
+      decimals: decimals
+    };
+    
+    updateCurrentPair();
+    customQuoteToken.value = '';
+    quoteToken.value = 'CUSTOM';
+    
+    addRealActivityLog(`✅ Added quote token: ${symbol}`, 'success');
+    
+    if (chkAutoApprove && chkAutoApprove.checked) {
+      setTimeout(() => approveAllTokens(), 1000);
+    } else {
+      checkAllAllowances();
+    }
+    
+  } catch (error) {
+    console.error('Error adding quote token:', error);
+    addRealActivityLog(`❌ Failed to add quote token: ${error.message}`, 'error');
   }
 }
 
 /* ============================
-  MAIN WALLET CONNECTION
+  MAIN INITIALIZATION
    ============================ */
-async function connectMainWallet() {
-  try {
-    if (typeof window.ethereum !== 'undefined') {
-      // Request account access
-      const accounts = await window.ethereum.request({ 
-        method: 'eth_requestAccounts' 
-      });
-      
-      mainAccount = accounts[0];
-      
-      // Create provider and signer
-      provider = new ethersLib.providers.Web3Provider(window.ethereum);
-      mainSigner = provider.getSigner();
-      
-      // Initialize router contract with signer
-      routerContract = new ethersLib.Contract(ROUTER, ROUTER_ABI, mainSigner);
-      
-      // Update UI
-      document.getElementById('walletAddress').textContent = shortAddr(mainAccount);
-      document.getElementById('connectBtn').textContent = 'Connected';
-      document.getElementById('connectBtn').classList.add('wallet-active');
-      document.getElementById('mainWalletStatus').textContent = 'Connected';
-      document.getElementById('mainWalletStatus').className = 'text-green-400 text-sm';
-      
-      addRealActivityLog(`✅ Wallet connected: ${shortAddr(mainAccount)}`, 'success');
-      
-      // Update wallet info
-      updateMainWalletInfo();
-      
-      // Update all bot wallets info
-      botWallets.forEach((_, index) => updateBotWalletInfo(index));
-      
-    } else {
-      throw new Error('MetaMask or other Web3 wallet not found. Please install MetaMask.');
-    }
-  } catch (error) {
-    console.error('Wallet connection error:', error);
-    addRealActivityLog(`❌ Failed to connect wallet: ${error.message}`, 'error');
-    alert('Failed to connect wallet. Please make sure you have MetaMask installed and try again.');
-  }
-}
-
-// Update main wallet information
-async function updateMainWalletInfo() {
-  if (!mainSigner) return;
-  
-  try {
-    const address = await mainSigner.getAddress();
-    
-    // Get balance
-    const balance = await provider.getBalance(address);
-    const balanceInEth = ethersLib.utils.formatEther(balance);
-    
-    if (mainWalletBalance) {
-      mainWalletBalance.textContent = `Balance: ${parseFloat(balanceInEth).toFixed(4)} XPL`;
-    }
-    
-    // Check allowance if base token is not native
-    if (currentTradingPair.base.address !== 'XPL_NATIVE') {
-      const tokenContract = new ethersLib.Contract(currentTradingPair.base.address, ERC20_ABI, mainSigner);
-      const allowance = await tokenContract.allowance(address, ROUTER);
-      const allowanceFormatted = ethersLib.utils.formatUnits(allowance, currentTradingPair.base.decimals);
-      
-      if (mainWalletAllowance) {
-        if (allowance.gt(0)) {
-          mainWalletAllowance.textContent = `Allowance: ${parseFloat(allowanceFormatted).toFixed(4)} ✅`;
-          mainWalletAllowance.className = 'muted small text-green-400';
-        } else {
-          mainWalletAllowance.textContent = `Allowance: Not Approved ❌`;
-          mainWalletAllowance.className = 'muted small text-red-400';
-        }
-      }
-    } else {
-      if (mainWalletAllowance) {
-        mainWalletAllowance.textContent = `Allowance: Native (Auto) ✅`;
-        mainWalletAllowance.className = 'muted small text-green-400';
-      }
-    }
-    
-  } catch (error) {
-    console.error('Error updating main wallet info:', error);
-    if (mainWalletBalance) mainWalletBalance.textContent = 'Balance: Error';
-    if (mainWalletAllowance) mainWalletAllowance.textContent = 'Allowance: Error';
-  }
-}
-
-
 async function init() {
   try {
     ethersLib = window.ethers;
@@ -1199,7 +1333,37 @@ async function init() {
   }
 }
 
-// Initialize the application when DOM is loaded
+function bindUI() {
+  document.getElementById('connectBtn').addEventListener('click', connectMainWallet);
+  
+  if (btnAddCustomToken) btnAddCustomToken.addEventListener('click', addCustomToken);
+  if (quoteToken) quoteToken.addEventListener('change', handleQuoteTokenChange);
+  if (customQuoteToken) {
+    customQuoteToken.addEventListener('blur', addCustomQuoteToken);
+    customQuoteToken.addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') addCustomQuoteToken();
+    });
+  }
+  
+  if (chkMainWallet) chkMainWallet.addEventListener('change', updateWalletStats);
+  if (chkMainWalletTrade) chkMainWalletTrade.addEventListener('change', updateWalletStats);
+  if (btnToggleAllWallets) btnToggleAllWallets.addEventListener('click', toggleAllWallets);
+  
+  if (btnApproveTokens) btnApproveTokens.addEventListener('click', approveAllTokens);
+  if (btnCheckAllowances) btnCheckAllowances.addEventListener('click', checkAllAllowances);
+  if (btnStartRealTrade) btnStartRealTrade.addEventListener('click', startRealTrading);
+  if (btnStopRealTrade) btnStopRealTrade.addEventListener('click', stopRealTrading);
+  if (btnEmergencyStop) btnEmergencyStop.addEventListener('click', emergencyStop);
+  if (btnClearLog) btnClearLog.addEventListener('click', () => {
+    realActivityLog.innerHTML = '<div class="text-center muted py-8">Log cleared</div>';
+    addRealActivityLog('Log cleared by user', 'info');
+  });
+  
+  if (btnAddBotWallet) btnAddBotWallet.addEventListener('click', () => addWalletModal.classList.remove('hidden'));
+  if (btnConfirmAddWallet) btnConfirmAddWallet.addEventListener('click', confirmAddWallet);
+  if (btnCancelAddWallet) btnCancelAddWallet.addEventListener('click', () => addWalletModal.classList.add('hidden'));
+}
+
 document.addEventListener('DOMContentLoaded', init);
 </script>
 </body>
